@@ -469,4 +469,8 @@ void ObjectTemplate::SetInternalFieldCount(int value) {
                       JS::Int32Value(value));
 }
 
+bool ObjectTemplate::IsInstance(JSObject* obj) {
+  return js::Valueify(JS_GetClass(obj)) == GetInstanceClass();
+}
+
 } // namespace v8
