@@ -8,67 +8,27 @@ matrix:
     - os: linux
       compiler: clang
       services: docker
-      script:
-        - docker run -v `pwd`:/build spidernode
-          sh -c "
-            export CC=clang CXX=clang++;
-            ./configure --engine=spidermonkey --debug &&
-            make -k V=;
-            ./deps/spidershim/scripts/run-tests.py
-          "
-      env: BUILD_CONFIG=normal ENABLE_DEBUG=true
+      env: BUILD_CONFIG=normal ENABLE_DEBUG=true EXPORTS="export CC=clang CXX=clang++"
 
     - os: linux
       compiler: gcc-4.8
       services: docker
-      script:
-        - docker run -v `pwd`:/build spidernode
-          sh -c "
-            export CC=gcc-4.8 CXX=g++-4.8;
-            ./configure --engine=spidermonkey --debug &&
-            make -k V=;
-            ./deps/spidershim/scripts/run-tests.py
-          "
-      env: BUILD_CONFIG=normal ENABLE_DEBUG=true
+      env: BUILD_CONFIG=normal ENABLE_DEBUG=true EXPORTS="export CC=gcc-4.8 CXX=g++-4.8"
 
     - os: linux
       compiler: gcc-5
       services: docker
-      script:
-        - docker run -v `pwd`:/build spidernode
-          sh -c "
-            ./configure --engine=spidermonkey --debug &&
-            make -k V=;
-            ./deps/spidershim/scripts/run-tests.py
-          "
       env: BUILD_CONFIG=normal ENABLE_DEBUG=true
 
     - os: linux
       compiler: clang
       services: docker
-      script:
-        - docker run -v `pwd`:/build spidernode
-          sh -c "
-            export CC=clang CXX=clang++;
-            ./configure --engine=spidermonkey --debug --enable-gczeal &&
-            make -k V=;
-            export JS_GC_MAX_ZEAL=1;
-            ./deps/spidershim/scripts/run-tests.py
-          "
-      env: BUILD_CONFIG=gczeal ENABLE_DEBUG=true
+      env: BUILD_CONFIG=gczeal ENABLE_DEBUG=true EXPORTS="export CC=clang CXX=clang++"
 
     - os: linux
       compiler: clang
       services: docker
-      script:
-        - docker run -v `pwd`:/build spidernode
-          sh -c "
-            export CC=clang CXX=clang++;
-            ./configure --engine=spidermonkey --debug --enable-asan &&
-            make -k V=;
-            ./deps/spidershim/scripts/run-tests.py
-          "
-      env: BUILD_CONFIG=normal ENABLE_ASAN=true ENABLE_DEBUG=true
+      env: BUILD_CONFIG=normal ENABLE_ASAN=true ENABLE_DEBUG=true EXPORTS="export CC=clang CXX=clang++"
 
     - os: osx
       compiler: clang
@@ -96,11 +56,22 @@ before_install:
   - if [ "$TRAVIS_OS_NAME" == "osx" ]; then brew update; fi
   - if [ "$TRAVIS_OS_NAME" == "osx" ]; then brew install autoconf213 yasm; fi
 before_script:
-  - ./configure $(if [ "$ENABLE_DEBUG" == "true" ]; then echo '--debug'; fi) --engine=spidermonkey $(if [ "$ENABLE_ASAN" == "true" ]; then echo "--enable-asan"; fi) $(if [ "$BUILD_CONFIG" == "gczeal" ]; then echo "--enable-gczeal"; fi)
+  - if [ "$TRAVIS_OS_NAME" == "osx" ]; then ./configure $(if [ "$ENABLE_DEBUG" == "true" ]; then echo '--debug'; fi) --engine=spidermonkey $(if [ "$ENABLE_ASAN" == "true" ]; then echo "--enable-asan"; fi) $(if [ "$BUILD_CONFIG" == "gczeal" ]; then echo "--enable-gczeal"; fi); fi
 script:
-  - travis_wait 60 make V= -k $MAKE_ARGS || true
-  - if [ "$BUILD_CONFIG" == "gczeal" ]; then export JS_GC_MAX_ZEAL=1; fi
-  - ./deps/spidershim/scripts/run-tests.py
+  - if [ "$TRAVIS_OS_NAME" == "osx" ]; then travis_wait 60 make V= -k $MAKE_ARGS || true; fi
+  - if [ "$TRAVIS_OS_NAME" == "osx" ]; then if [ "$BUILD_CONFIG" == "gczeal" ]; then export JS_GC_MAX_ZEAL=1; fi; fi
+  - if [ "$TRAVIS_OS_NAME" == "osx" ]; then ./deps/spidershim/scripts/run-tests.py; fi
+  - echo "$EXPORTS; ./configure $(if [ \"$ENABLE_DEBUG\" == \"true\" ]; then echo '--debug'; fi) --engine=spidermonkey $(if [ \"$ENABLE_ASAN\" == \"true\" ]; then echo \"--enable-asan\"; fi) $(if [ \"$BUILD_CONFIG\" == \"gczeal\" ]; then echo \"--enable-gczeal\"; fi)  &&
+    make -k V=;
+    $(if [ \"$BUILD_CONFIG\" == \"gczeal\" ]; then echo \"export JS_GC_MAX_ZEAL=1;\"; fi)
+    ./deps/spidershim/scripts/run-tests.py
+    "
+  - if [ "$TRAVIS_OS_NAME" == "linux" ]; then docker run -v `pwd`:/build spidernode
+    sh -c "$EXPORTS; ./configure $(if [ \"$ENABLE_DEBUG\" == \"true\" ]; then echo '--debug'; fi) --engine=spidermonkey $(if [ \"$ENABLE_ASAN\" == \"true\" ]; then echo \"--enable-asan\"; fi) $(if [ \"$BUILD_CONFIG\" == \"gczeal\" ]; then echo \"--enable-gczeal\"; fi)  &&
+    make -k V=;
+    $(if [ \"$BUILD_CONFIG\" == \"gczeal\" ]; then echo \"export JS_GC_MAX_ZEAL=1;\"; fi)
+    ./deps/spidershim/scripts/run-tests.py
+    "
 notifications:
   email: true
 env:
