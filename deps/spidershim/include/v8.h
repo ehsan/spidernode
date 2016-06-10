@@ -2148,15 +2148,31 @@ class V8_EXPORT FunctionTemplate : public Template {
   friend class Template;
   friend class ObjectTemplate;
 
+  // Callers are expected to put the JSContext in the right compartment before
+  // making this call.
+  static Local<FunctionTemplate> New(
+    Isolate* isolate,
+    JSContext* cx,
+    FunctionCallback callback = 0,
+    Handle<Value> data = Handle<Value>(),
+    Handle<Signature> signature = Handle<Signature>(),
+    int length = 0);
   Local<ObjectTemplate> FetchOrCreateTemplate(size_t slotIndex);
   Local<Object> CreateNewInstance();
-  static Local<Value> MaybeConvertObjectProperty(Local<Value> value);
+  static Local<Value> MaybeConvertObjectProperty(Local<Value> value,
+						 Local<String> name);
   void SetInstanceTemplate(Local<ObjectTemplate> instanceTemplate);
   Handle<String> GetClassName();
   // Return the object that should be used as a prototype by ObjectTemplates
   // that have this FunctionTemplate as their constructor.  Can return an empty
   // Local on failure.
   Local<Object> GetProtoInstance(Local<Context> context);
+  // The FunctionTemplate we inherit from, if any.
+  MaybeLocal<FunctionTemplate> GetParent();
+  // Install properties from this template's InstanceTemplate, as well as the
+  // InstanceTemplates of all ancestors, on the given object.  Returns false on
+  // failure, true on success.
+  bool InstallInstanceProperties(Local<Object> target);
 };
 
 enum class PropertyHandlerFlags {
@@ -2303,6 +2319,10 @@ class V8_EXPORT ObjectTemplate : public Template {
   // plain-object JSClass.
   InstanceClass* GetInstanceClass();
   bool IsInstance(JSObject* obj);
+  static bool IsObjectFromTemplate(Local<Object> object);
+  // The object argument should be an object created from an ObjectTemplate, i.e.,
+  // an object for which IsObjectFromTemplate() returns true.
+  static Local<FunctionTemplate> GetObjectTemplateConstructor(Local<Object> object);
 };
 
 class V8_EXPORT External : public Value {
