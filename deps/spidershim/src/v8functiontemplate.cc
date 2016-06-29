@@ -39,6 +39,7 @@ enum FunctionTemplatePrivateSlots {
                            // probably OK if we only support one global.
   ProtoSlot,               // Stores our instantiated prototype, this is an
                            // object if and only if InstanceSlot is one.
+  ClassNameSlot,           // Stores our class name (see SetClassName).
   NumSlots
 };
 
@@ -88,7 +89,22 @@ Local<FunctionTemplate> FunctionTemplate::New(Isolate* isolate,
                                               Handle<Value> data,
                                               Handle<Signature> signature,
                                               int length) {
-  Local<Template> templ = Template::New(isolate, &functionTemplateClass);
+  JSContext* cx = JSContextFromIsolate(isolate);
+  AutoJSAPI jsAPI(cx);
+
+  return New(isolate, cx, callback, data, signature, length);
+}
+
+// static
+Local<FunctionTemplate> FunctionTemplate::New(Isolate* isolate,
+                                              JSContext* cx,
+                                              FunctionCallback callback,
+                                              Handle<Value> data,
+                                              Handle<Signature> signature,
+                                              int length) {
+  assert(cx == JSContextFromIsolate(isolate));
+
+  Local<Template> templ = Template::New(isolate, cx, &functionTemplateClass);
   if (templ.IsEmpty()) {
     return Local<FunctionTemplate>();
   }
@@ -96,9 +112,6 @@ Local<FunctionTemplate> FunctionTemplate::New(Isolate* isolate,
   JSObject* obj = GetObject(*templ);
   assert(obj);
   assert(JS_GetClass(obj) == &functionTemplateClass);
-
-  JSContext* cx = JSContextFromIsolate(isolate);
-  AutoJSAPI jsAPI(cx);
 
   if (!SetCallbackAndData(cx, obj, callback, data)) {
     return Local<FunctionTemplate>();
@@ -173,6 +186,8 @@ MaybeLocal<Function> FunctionTemplate::GetFunction(Local<Context> context) {
     protoProto = JS_GetObjectPrototype(cx, currentGlobal);
   }
 
+  assert(protoProto);
+
   JS::RootedObject protoObj(cx);
   JS::RootedValue protoTemplateVal(cx, js::GetReservedSlot(obj, ProtoTemplateSlot));
   if (protoTemplateVal.isUndefined()) {
@@ -209,7 +224,7 @@ MaybeLocal<Function> FunctionTemplate::GetFunction(Local<Context> context) {
                                             dataV8Val,
                                             lengthVal.toInt32(),
                                             thisTempl,
-                                            InstanceTemplate()->GetClassName());
+                                            GetClassName());
   if (func.IsEmpty()) {
     return MaybeLocal<Function>();
   }
@@ -221,11 +236,13 @@ MaybeLocal<Function> FunctionTemplate::GetFunction(Local<Context> context) {
     return MaybeLocal<Function>();
   }
 
-  // TODO: Is the result of all this supposed to have a non-configurable
-  // .prototype like builtins, or a configurable one like scripted functions?
-  // Let's assume the former.  See
-  // https://github.com/mozilla/spidernode/issues/140
-  if (!JS_LinkConstructorAndPrototype(cx, funcObj, protoObj)) {
+  // Looks like V8 by default makes the .prototype writable (but
+  // non-configurable, I assume, since that's how it works for functions in
+  // general).  There's an API that we don't implement and Node doesn't seem to
+  // use to make it readonly.
+  if (!JS_DefineProperty(cx, funcObj, "prototype", protoObj,
+			 JSPROP_PERMANENT) ||
+      !JS_DefineProperty(cx, protoObj, "constructor", funcObj, 0)) {
     return MaybeLocal<Function>();
   }
 
@@ -251,10 +268,42 @@ Local<ObjectTemplate> FunctionTemplate::PrototypeTemplate() {
 }
 
 void FunctionTemplate::SetClassName(Handle<String> name) {
-  Local<ObjectTemplate> instanceTemplate = InstanceTemplate();
-  if (!instanceTemplate.IsEmpty()) {
-    instanceTemplate->SetClassName(name);
-  }  
+  Isolate* isolate = Isolate::GetCurrent();
+  JSContext* cx = JSContextFromIsolate(isolate);
+  AutoJSAPI jsAPI(cx, this);
+  JS::RootedObject obj(cx, GetObject(this));
+  assert(obj);
+  assert(JS_GetClass(obj) == &functionTemplateClass);
+
+  if (TemplateIsInstantiated(obj)) {
+    // TODO: Supposed to be a fatal error of some sort.
+    return;
+  }
+
+  JS::RootedValue nameVal(cx, *GetValue(name));
+  if (!JS_WrapValue(cx, &nameVal)) {
+    // TODO: Signal the failure somehow.
+    return;
+  }
+  assert(nameVal.isString());
+  js::SetReservedSlot(obj, ClassNameSlot, nameVal);
+}
+
+Handle<String> FunctionTemplate::GetClassName() {
+  Isolate* isolate = Isolate::GetCurrent();
+  JSContext* cx = JSContextFromIsolate(isolate);
+  AutoJSAPI jsAPI(cx, this);
+  JS::RootedObject obj(cx, GetObject(this));
+  assert(obj);
+  assert(JS_GetClass(obj) == &functionTemplateClass);
+
+  JS::Value nameVal = js::GetReservedSlot(obj, ClassNameSlot);
+  if (nameVal.isUndefined()) {
+    return Local<String>();
+  }
+
+  assert(nameVal.isString());
+  return internal::Local<String>::New(isolate, nameVal);
 }
 
 void
@@ -282,14 +331,6 @@ FunctionTemplate::SetCallHandler(FunctionCallback callback,
   }
 }
 
-// TODO: Need to implement HasInstance.  What are the actual semantics of this?
-// I can't figure out so far from the V8 API docs and their implementation.  In
-// particular, does it just check whether this is precisely an object that
-// constructing via the function returned by this FunctionTemplate produces?  Or
-// is any subclass (including via FunctionTemplates that inherit from this one)
-// OK?  Or is this a dynamic check equivalent to the instanceof operator in JS?
-// See https://github.com/mozilla/spidernode/issues/143
-
 void
 FunctionTemplate::Inherit(Handle<FunctionTemplate> parent) {
   JSContext* cx = JSContextFromIsolate(Isolate::GetCurrent());
@@ -304,8 +345,13 @@ FunctionTemplate::Inherit(Handle<FunctionTemplate> parent) {
   }
 
   JS::RootedValue slotVal(cx);
-  if (*parent) {
+  if (!parent.IsEmpty()) {
     JS::RootedObject otherTemplate(cx, GetObject(*parent));
+    if (js::GetObjectCompartment(otherTemplate) !=
+	js::GetContextCompartment(cx)) {
+      MOZ_CRASH("Trying to set up inheritance between FunctionTemplates from "
+		"different compartments");
+    }
     slotVal.setObject(*otherTemplate);
   }
   // else slotVal is already undefined
@@ -322,12 +368,10 @@ Local<Object> FunctionTemplate::CreateNewInstance() {
   assert(JS_GetClass(obj) == &functionTemplateClass);
 
   Local<ObjectTemplate> instanceTemplate = InstanceTemplate();
-  JS::Value protoVal = js::GetReservedSlot(obj, ProtoSlot);
-  // If this is getting called, we succeeded in GetFunction(), so have a proto
-  // stored.
-  assert(protoVal.isObject());
-  Local<Object> protoObj = internal::Local<Object>::New(isolate, protoVal);
-  return instanceTemplate->NewInstance(protoObj);
+  if (instanceTemplate.IsEmpty()) {
+    return Local<Object>();
+  }
+  return instanceTemplate->NewInstance();
 }
 
 Local<ObjectTemplate> FunctionTemplate::FetchOrCreateTemplate(size_t slotIndex) {
@@ -344,8 +388,14 @@ Local<ObjectTemplate> FunctionTemplate::FetchOrCreateTemplate(size_t slotIndex) 
       internal::Local<ObjectTemplate>::NewTemplate(isolate, templateVal);
   }
 
+  Local<FunctionTemplate> ctor;
+  if (slotIndex == InstanceTemplateSlot) {
+    // We want to use ourselves as the constructor here.
+    ctor =
+      internal::Local<FunctionTemplate>::NewTemplate(isolate, *GetValue(this));
+  }
   assert(templateVal.isUndefined());
-  Local<ObjectTemplate> templ = ObjectTemplate::New(isolate);
+  Local<ObjectTemplate> templ = ObjectTemplate::New(isolate, cx, ctor);
   if (templ.IsEmpty()) {
     return Local<ObjectTemplate>();
   }
@@ -361,42 +411,113 @@ bool FunctionTemplate::HasInstance(Local<Value> val) {
   Isolate* isolate = Isolate::GetCurrent();
   JSContext* cx = JSContextFromIsolate(isolate);
   AutoJSAPI jsAPI(cx, this);
-  JS::RootedObject obj(cx, GetObject(val));
-  JS::RootedObject protoObj(cx);
-  if (!JS_GetPrototype(cx, obj, &protoObj)) {
+  JS::RootedValue value(cx, *GetValue(val));
+  if (!JS_WrapValue(cx, &value)) {
     return false;
   }
-  JS::RootedValue funcVal(cx);
-  if (!JS_GetProperty(cx, protoObj, "constructor", &funcVal) ||
-      !funcVal.isObject() ||
-      !JS_ObjectIsFunction(cx, &funcVal.toObject())) {
+  Local<Object> obj = internal::Local<Object>::New(isolate, value);
+  if (!ObjectTemplate::IsObjectFromTemplate(obj)) {
     return false;
   }
-  JS::RootedValue thisVal(cx, *GetValue(this));
-  JS::RootedValue templateVal(cx,
-    js::GetFunctionNativeReserved(&funcVal.toObject(), 0));
-  while (templateVal.isObject()) {
-    bool equals = false;
-    if (JS_StrictlyEqual(cx, templateVal, thisVal, &equals) && equals) {
-      Local<ObjectTemplate> instanceTemplate = InstanceTemplate();
-      if (instanceTemplate.IsEmpty()) {
-        return false;
-      }
-      return instanceTemplate->IsInstance(obj);
+  Local<FunctionTemplate> ctor = ObjectTemplate::GetObjectTemplateConstructor(obj);
+  while (!ctor.IsEmpty()) {
+    // We don't need JS_StrictlyEqual since we know both sides are objects here.
+    if (*GetValue(ctor) == *GetValue(this)) {
+      return true;
     }
-    assert(JS_GetClass(&templateVal.toObject()) == &functionTemplateClass);
-    templateVal = js::GetReservedSlot(&templateVal.toObject(), ParentSlot);
+    ctor = GetParent().FromMaybe(Local<FunctionTemplate>());
   }
   return false;
 }
 
 // static
-Local<Value> FunctionTemplate::MaybeConvertObjectProperty(Local<Value> value) {
+Local<Value> FunctionTemplate::MaybeConvertObjectProperty(Local<Value> value,
+							  Local<String> name) {
   if (!value.IsEmpty() && value->IsObject() &&
       JS_GetClass(GetObject(value)) == &functionTemplateClass) {
-    return reinterpret_cast<FunctionTemplate*>(GetValue(*value))->GetFunction();
+    Local<Function> func =
+      reinterpret_cast<FunctionTemplate*>(GetValue(value))->GetFunction();
+    func->SetName(name);
+    return func;
   }
   return value;
+}
+
+void FunctionTemplate::SetInstanceTemplate(Local<ObjectTemplate> instanceTemplate) {
+  Isolate* isolate = Isolate::GetCurrent();
+  JSContext* cx = JSContextFromIsolate(isolate);
+  AutoJSAPI jsAPI(cx, this);
+  JS::RootedObject obj(cx, GetObject(this));
+  assert(obj);
+  assert(JS_GetClass(obj) == &functionTemplateClass);
+  assert(!instanceTemplate.IsEmpty());
+
+  js::SetReservedSlot(obj, InstanceTemplateSlot,
+                      JS::ObjectValue(*GetObject(*instanceTemplate)));
+}
+
+Local<Object> FunctionTemplate::GetProtoInstance(Local<Context> context) {
+  // First ensure we're instantiated.
+  MaybeLocal<Function> func = GetFunction(context);
+  if (func.IsEmpty()) {
+    return Local<Object>();
+  }
+
+  Isolate* isolate = context->GetIsolate();
+  JSContext* cx = JSContextFromIsolate(isolate);
+  AutoJSAPI jsAPI(cx, this);
+  JS::RootedObject obj(cx, GetObject(this));
+  assert(obj);
+  assert(JS_GetClass(obj) == &functionTemplateClass);
+  JS::Value protoVal = js::GetReservedSlot(obj, ProtoSlot);
+  assert(protoVal.isObject());
+  return internal::Local<Object>::New(isolate, protoVal);
+}
+
+MaybeLocal<FunctionTemplate> FunctionTemplate::GetParent()
+{
+  Isolate* isolate = Isolate::GetCurrent();
+  JSContext* cx = JSContextFromIsolate(isolate);
+  AutoJSAPI jsAPI(cx, this);
+  JS::RootedObject obj(cx, GetObject(this));
+  assert(obj);
+  assert(JS_GetClass(obj) == &functionTemplateClass);
+
+  JS::Value parentVal = js::GetReservedSlot(obj, ParentSlot);
+  if (parentVal.isUndefined()) {
+    return MaybeLocal<FunctionTemplate>();
+  }
+
+  assert(parentVal.isObject());
+  return internal::Local<FunctionTemplate>::NewTemplate(isolate, parentVal);
+}
+
+bool FunctionTemplate::InstallInstanceProperties(Local<Object> target) {
+  assert(!target.IsEmpty());
+
+  // Install our parent's properties first so we'll override as needed if we
+  // have properties with the same name.
+  MaybeLocal<FunctionTemplate> parent = GetParent();
+  if (!parent.IsEmpty() &&
+      !parent.ToLocalChecked()->InstallInstanceProperties(target)) {
+    return false;
+  }
+
+  Local<ObjectTemplate> instance = InstanceTemplate();
+  if (instance.IsEmpty()) {
+    return false;
+  }
+
+  Isolate* isolate = Isolate::GetCurrent();
+  JSContext* cx = JSContextFromIsolate(isolate);
+  AutoJSAPI jsAPI(cx, this);
+  JS::RootedObject instanceObj(cx, GetObject(*instance));
+  assert(instanceObj);
+
+  JS::RootedObject targetObj(cx, GetObject(target));
+  assert(targetObj);
+
+  return JS_CopyPropertiesFrom(cx, targetObj, instanceObj);
 }
 
 } // namespace v8

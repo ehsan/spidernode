@@ -44,5 +44,13 @@
       'target_name': 'unboundscript',
       'sources': [ 'test/unboundscript.cc' ],
     },
+    {
+      'target_name': 'object',
+      'sources': [ 'test/object.cc' ],
+    },
+    {
+      'target_name': 'valuemap',
+      'sources': [ 'test/valuemap.cc' ],
+    },
   ],
 }

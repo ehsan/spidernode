@@ -35,7 +35,7 @@ namespace v8 {
  * them are alive.  We implement this by having the relevant objects refcount
  * the class and drop the ref in the finalizer.
  */
-class ObjectTemplate::InstanceClass : public js::Class {
+class ObjectTemplate::InstanceClass : public JSClass {
 public:
   void AddRef() {
     ++mRefCnt;
@@ -48,10 +48,15 @@ public:
     }
   }
 
+  static const uint32_t nameAllocated = JSCLASS_USERBIT1;
+  static const uint32_t instantiatedFromTemplate = JSCLASS_USERBIT2;
+
 private:
   ~InstanceClass() {
-    // We heap-allocated our name, so need to free it now.
-    JS_free(nullptr, const_cast<char*>(name));
+    if (flags & nameAllocated) {
+      // We heap-allocated our name, so need to free it now.
+      JS_free(nullptr, const_cast<char*>(name));
+    }
   }
   uint32_t mRefCnt = 0;
 };
@@ -70,18 +75,15 @@ void ObjectTemplateFinalize(JSFreeOp* fop, JSObject* obj) {
 
   auto instanceClass =
     static_cast<v8::ObjectTemplate::InstanceClass*>(classValue.toPrivate());
-  if (!instanceClass) {
-    // We're using the default plain-object class.
-    return;
-  }
+  assert(instanceClass);
 
   instanceClass->Release();
 }
 
 enum class TemplateSlots {
-  ClassNameSlot,          // Stores our class name (see SetClassName).
   InstanceClassSlot,      // Stores the InstanceClass* for our instances.
   InternalFieldCountSlot, // Stores the internal field count for our instances.
+  ConstructorSlot,        // Stores our constructor FunctionTemplate.
   NumSlots
 };
 
@@ -125,9 +127,49 @@ const JSClassOps objectInstanceClassOps = {
 
 namespace v8 {
 
-Local<ObjectTemplate> ObjectTemplate::New(Isolate* isolate) {
-  Local<Template> templ = Template::New(isolate, &objectTemplateClass);
-  return Local<ObjectTemplate>(static_cast<ObjectTemplate*>(*templ));
+Local<ObjectTemplate> ObjectTemplate::New(Isolate* isolate,
+                                          Local<FunctionTemplate> constructor) {
+  JSContext* cx = JSContextFromIsolate(isolate);
+  AutoJSAPI jsAPI(cx);
+  if (!constructor.IsEmpty() &&
+      js::GetContextCompartment(cx) !=
+      js::GetObjectCompartment(GetObject(*constructor))) {
+    MOZ_CRASH("Attempt to create an ObjectTemplate with a constructor from a "
+              "different compartment");
+  }
+
+  return ObjectTemplate::New(isolate, cx, constructor);
+}
+
+Local<ObjectTemplate> ObjectTemplate::New(Isolate* isolate,
+                                          JSContext* cx,
+                                          Local<FunctionTemplate> constructor) {
+  assert(cx == JSContextFromIsolate(isolate));
+
+  bool setInstance = false;
+  if (constructor.IsEmpty()) {
+    constructor = FunctionTemplate::New(isolate, cx);
+    setInstance = true;
+    if (constructor.IsEmpty()) {
+      return Local<ObjectTemplate>();
+    }
+  }
+
+  Local<Template> templ = Template::New(isolate, cx, &objectTemplateClass);
+  if (templ.IsEmpty()) {
+    return Local<ObjectTemplate>();
+  }
+
+  Local<ObjectTemplate> objectTempl(static_cast<ObjectTemplate*>(*templ));
+  JS::RootedObject obj(cx, GetObject(*templ));
+
+  if (setInstance) {
+    constructor->SetInstanceTemplate(objectTempl);
+  }
+
+  js::SetReservedSlot(obj, size_t(TemplateSlots::ConstructorSlot),
+                      JS::ObjectValue(*GetObject(*constructor)));
+  return objectTempl;
 }
 
 Local<Object> ObjectTemplate::NewInstance() {
@@ -137,7 +179,12 @@ Local<Object> ObjectTemplate::NewInstance() {
 }
 
 MaybeLocal<Object> ObjectTemplate::NewInstance(Local<Context> context) {
-  return NewInstance(Local<Object>());
+  Local<Object> prototype = GetConstructor()->GetProtoInstance(context);
+  if (prototype.IsEmpty()) {
+    return MaybeLocal<Object>();
+  }
+
+  return NewInstance(prototype);
 }
 
 Local<Object> ObjectTemplate::NewInstance(Local<Object> prototype) {
@@ -151,13 +198,8 @@ Local<Object> ObjectTemplate::NewInstance(Local<Object> prototype) {
   // XXXbz V8 uses a new HandleScope here.  I _think_ that's a performance
   // optimization....
 
-  JS::RootedObject protoObj(cx);
-  if (prototype.IsEmpty()) {
-    JS::RootedObject currentGlobal(cx, JS::CurrentGlobalOrNull(cx));
-    protoObj = JS_GetObjectPrototype(cx, currentGlobal);
-  } else {
-    protoObj = &GetValue(prototype)->toObject();
-  }
+  assert(!prototype.IsEmpty());
+  JS::RootedObject protoObj(cx, &GetValue(prototype)->toObject());
 
   InstanceClass* instanceClass = GetInstanceClass();
   assert(instanceClass);
@@ -168,7 +210,7 @@ Local<Object> ObjectTemplate::NewInstance(Local<Object> prototype) {
   // us.  For now, let's just go ahead and do the simple thing, since we don't
   // implement those parts of the API yet..
   JS::RootedObject instanceObj(cx);
-  instanceObj = JS_NewObjectWithGivenProto(cx, Jsvalify(instanceClass), protoObj);
+  instanceObj = JS_NewObjectWithGivenProto(cx, instanceClass, protoObj);
   if (!instanceObj) {
     return Local<Object>();
   }
@@ -177,34 +219,34 @@ Local<Object> ObjectTemplate::NewInstance(Local<Object> prototype) {
   // instance is alive.
   js::SetReservedSlot(instanceObj, size_t(InstanceSlots::InstanceClassSlot),
                       JS::PrivateValue(instanceClass));
+  js::SetReservedSlot(instanceObj, size_t(InstanceSlots::ConstructorSlot),
+                      JS::ObjectValue(*GetObject(*GetConstructor())));
   instanceClass->AddRef();
 
-  // Copy the bits set on us via Template::Set.
+  JS::Value instanceVal = JS::ObjectValue(*instanceObj);
+  Local<Object> instanceLocal =
+    internal::Local<Object>::New(isolate, instanceVal);
+
+  // Copy the bits set on us and the things we inherit from via Template::Set.
+  // We don't just GetConstructor()->InstallInstanceProperties() here because
+  // it's possible we're not our constructor's instance template.
+  MaybeLocal<FunctionTemplate> functionTemplate = GetConstructor()->GetParent();
+  if (!functionTemplate.IsEmpty() &&
+      !functionTemplate.ToLocalChecked()->InstallInstanceProperties(instanceLocal)) {
+    return Local<Object>();
+  }
+
   if (!JS_CopyPropertiesFrom(cx, instanceObj, obj)) {
     return Local<Object>();
   }
 
-  JS::Value instanceVal = JS::ObjectValue(*instanceObj);
-  return internal::Local<Object>::New(isolate, instanceVal);
+  return instanceLocal;
 }
 
 void ObjectTemplate::SetClassName(Handle<String> name) {
   // XXXbz what do we do if we've already been instantiated?  We can't just
   // change our instance class...
-  Isolate* isolate = Isolate::GetCurrent();
-  JSContext* cx = JSContextFromIsolate(isolate);
-  AutoJSAPI jsAPI(cx, this);
-  JS::RootedObject obj(cx, GetObject(this));
-  assert(obj);
-  assert(JS_GetClass(obj) == &objectTemplateClass);
-
-  JS::RootedValue nameVal(cx, *GetValue(name));
-  if (!JS_WrapValue(cx, &nameVal)) {
-    // TODO: Signal the failure somehow.
-    return;
-  }
-  assert(nameVal.isString());
-  js::SetReservedSlot(obj, size_t(TemplateSlots::ClassNameSlot), nameVal);
+  GetConstructor()->SetClassName(name);
 }
 
 void ObjectTemplate::SetAccessor(Handle<String> name,
@@ -256,21 +298,10 @@ void ObjectTemplate::SetAccessorInternal(Handle<N> name,
 
 // TODO SetAccessCheckCallbacks: Can this just be a no-op?
 
-// TODO SetInternalFieldCount
-
 // TODO SetCallAsFunctionHandler
 
 Handle<String> ObjectTemplate::GetClassName() {
-  Isolate* isolate = Isolate::GetCurrent();
-  JSContext* cx = JSContextFromIsolate(isolate);
-  AutoJSAPI jsAPI(cx, this);
-  JS::RootedObject obj(cx, GetObject(this));
-  assert(obj);
-  assert(JS_GetClass(obj) == &objectTemplateClass);
-
-  JS::Value nameVal =
-    js::GetReservedSlot(obj, size_t(TemplateSlots::ClassNameSlot));
-  return internal::Local<String>::New(isolate, nameVal);
+  return GetConstructor()->GetClassName();
 }
 
 ObjectTemplate::InstanceClass* ObjectTemplate::GetInstanceClass() {
@@ -287,19 +318,19 @@ ObjectTemplate::InstanceClass* ObjectTemplate::GetInstanceClass() {
     return static_cast<InstanceClass*>(classValue.toPrivate());
   }
 
-  // Check whether we need to synthesize a new JSClass.
   InstanceClass* instanceClass = new InstanceClass();
   if (!instanceClass) {
     MOZ_CRASH();
   }
 
-  JS::Value nameVal = js::GetReservedSlot(obj,
-                                          size_t(TemplateSlots::ClassNameSlot));
-  if (nameVal.isUndefined()) {
+  uint32_t flags = InstanceClass::instantiatedFromTemplate;
+  Local<String> name = GetClassName();
+  if (name.IsEmpty()) {
     instanceClass->name = "Object";
   } else {
-    JS::RootedString str(cx, nameVal.toString());
+    JS::RootedString str(cx, GetValue(name)->toString());
     instanceClass->name = JS_EncodeStringToUTF8(cx, str);
+    flags |= InstanceClass::nameAllocated;
   }
 
   JS::Value internalFieldCountVal = js::GetReservedSlot(obj,
@@ -310,12 +341,12 @@ ObjectTemplate::InstanceClass* ObjectTemplate::GetInstanceClass() {
   }
 
   instanceClass->flags =
-    JSCLASS_HAS_RESERVED_SLOTS(uint32_t(InstanceSlots::NumSlots) +
-                               internalFieldCount);
-  instanceClass->cOps = nullptr;
-  instanceClass->spec = nullptr;
-  instanceClass->ext = nullptr;
-  instanceClass->oOps = nullptr;
+    flags | JSCLASS_HAS_RESERVED_SLOTS(uint32_t(InstanceSlots::NumSlots) +
+                                       internalFieldCount);
+  instanceClass->cOps = &objectInstanceClassOps;
+  instanceClass->reserved[0] = nullptr;
+  instanceClass->reserved[1] = nullptr;
+  instanceClass->reserved[2] = nullptr;
 
   instanceClass->AddRef(); // Will be released in obj's finalizer.
 
@@ -339,7 +370,39 @@ void ObjectTemplate::SetInternalFieldCount(int value) {
 bool ObjectTemplate::IsInstance(JSObject* obj) {
   InstanceClass* instanceClass = GetInstanceClass();
   assert(instanceClass);
-  return js::GetObjectClass(obj) == instanceClass;
+  return JS_GetClass(obj) == instanceClass;
+}
+
+Local<FunctionTemplate> ObjectTemplate::GetConstructor() {
+  Isolate* isolate = Isolate::GetCurrent();
+  JSContext* cx = JSContextFromIsolate(isolate);
+  AutoJSAPI jsAPI(cx, this);
+  JS::RootedObject obj(cx, GetObject(this));
+  assert(obj);
+  assert(JS_GetClass(obj) == &objectTemplateClass);
+
+  JS::Value ctorVal =
+    js::GetReservedSlot(obj, size_t(TemplateSlots::ConstructorSlot));
+  return internal::Local<FunctionTemplate>::NewTemplate(isolate, ctorVal);
+}
+
+bool ObjectTemplate::IsObjectFromTemplate(Local<Object> object) {
+  assert(!object.IsEmpty());
+  return !!(JS_GetClass(GetObject(object))->flags & InstanceClass::instantiatedFromTemplate);
+}
+
+Local<FunctionTemplate> ObjectTemplate::GetObjectTemplateConstructor(Local<Object> object) {
+  assert(IsObjectFromTemplate(object));
+  Isolate* isolate = Isolate::GetCurrent();
+  JSContext* cx = JSContextFromIsolate(isolate);
+  AutoJSAPI jsAPI(cx, object);
+  JS::RootedObject obj(cx, GetObject(*object));
+  assert(obj);
+
+  JS::Value ctorVal =
+    js::GetReservedSlot(obj, size_t(InstanceSlots::ConstructorSlot));
+  assert(ctorVal.isObject());
+  return internal::Local<FunctionTemplate>::NewTemplate(isolate, ctorVal);
 }
 
 } // namespace v8

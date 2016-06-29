@@ -26,9 +26,9 @@
 
 namespace v8 {
 
-Local<Template> Template::New(Isolate* isolate, const JSClass* jsclass) {
-  JSContext* cx = JSContextFromIsolate(isolate);
-  AutoJSAPI jsAPI(cx);
+Local<Template> Template::New(Isolate* isolate, JSContext* cx,
+                              const JSClass* jsclass) {
+  assert(cx == JSContextFromIsolate(isolate));
   JSObject* obj = JS_NewObject(cx, jsclass);
   if (!obj) {
     return Local<Template>();
@@ -42,7 +42,8 @@ void Template::Set(Local<String> name, Local<Data> value,
                    PropertyAttribute attributes) {
   // We have to ignore the return value since the V8 API returns void here.
   Object* thisObj = Object::Cast(GetV8Value(this));
-  Local<Value> val = FunctionTemplate::MaybeConvertObjectProperty(value.As<Value>());
+  Local<Value> val =
+    FunctionTemplate::MaybeConvertObjectProperty(value.As<Value>(), name);
   thisObj->ForceSet(name, val, attributes);
 }
 }

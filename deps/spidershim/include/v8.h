@@ -114,6 +114,8 @@ template <class T> class Maybe;
 template <class T> class MaybeLocal;
 template <class T> class NonCopyablePersistentTraits;
 template <class T> class PersistentBase;
+template <class T, class U, class V> class PersistentValueMapBase;
+template <class T, class U> class PersistentValueVector;
 template <class T, class M = NonCopyablePersistentTraits<T> > class Persistent;
 template <typename T> class FunctionCallbackInfo;
 template <typename T> class PropertyCallbackInfo;
@@ -247,14 +249,10 @@ class Local {
   V8_INLINE T* operator*() const { return val_; }
 
   template <class S>
-  V8_INLINE bool operator==(const Local<S>& that) const {
-    return val_ == that.val_;
-  }
+  V8_INLINE bool operator==(const Local<S>& that) const;
 
   template <class S>
-  V8_INLINE bool operator==(const PersistentBase<S>& that) const {
-    return val_ == that.val_;
-  }
+  V8_INLINE bool operator==(const PersistentBase<S>& that) const;
 
   template <class S>
   V8_INLINE bool operator!=(const Local<S>& that) const {
@@ -321,6 +319,8 @@ class Local {
   template <class F> friend class MaybeLocal;
   template <class F> friend class PersistentBase;
   template <class F, class M> friend class Persistent;
+  template <class F, class M, class F2> friend class PersistentValueMapBase;
+  template <class F, class M> friend class PersistentValueVector;
   template <class F> friend class Eternal;
   template <class F> friend class Local;
   template <class F> friend class internal::Local;
@@ -484,14 +484,10 @@ class PersistentBase {
   }
 
   template <class S>
-  V8_INLINE bool operator==(const PersistentBase<S>& that) const {
-    return *val_ == *that.val_;
-  }
+  V8_INLINE bool operator==(const PersistentBase<S>& that) const;
 
   template <class S>
-  V8_INLINE bool operator==(const Handle<S>& that) const {
-    return *val_ == *that.val_;
-  }
+  V8_INLINE bool operator==(const Handle<S>& that) const;
 
   template <class S>
   V8_INLINE bool operator!=(const PersistentBase<S>& that) const {
@@ -529,6 +525,8 @@ class PersistentBase {
   template<class F> friend class Global;
   template<class F> friend class Local;
   template<class F1, class F2> friend class Persistent;
+  template <class F, class M, class F2> friend class PersistentValueMapBase;
+  template <class F, class M> friend class PersistentValueVector;
   friend class Object;
 
   explicit V8_INLINE PersistentBase(T* val) : val_(val) {}
@@ -1146,6 +1144,7 @@ private:
   char spidershim_padding[8]; // see the comment for Value.
 
 protected:
+  template <class F> friend class Local;
   template <class F> friend class PersistentBase;
   V8_INLINE bool operator==(const Value& that) const {
     for (size_t i = 0; i < sizeof(spidershim_padding); ++i) {
@@ -1731,9 +1730,17 @@ class ReturnValue {
  public:
   // Handle setters
   template <typename S> void Set(const Persistent<S>& handle) {
+    if (handle.IsEmpty()) {
+      SetUndefined();
+      return;
+    }
     *_value = static_cast<Value*>(*handle);
   }
   template <typename S> void Set(const Handle<S> handle) {
+    if (handle.IsEmpty()) {
+      SetUndefined();
+      return;
+    }
     // ReturnValue needs to root the Local to the parent HandleScope.
     Local<S> parentHandle =
       EscapableHandleScope::EscapeToParentHandleScope(handle);
@@ -2098,7 +2105,9 @@ class V8_EXPORT Template : public Data {
   }
 
  protected:
-  static Local<Template> New(Isolate* isolate,
+  // Callers are expected to put the JSContext in the right compartment before
+  // calling this function.
+  static Local<Template> New(Isolate* isolate, JSContext* cx,
                              const JSClass* jsclass = nullptr);
 
  private:
@@ -2136,10 +2145,33 @@ class V8_EXPORT FunctionTemplate : public Template {
  private:
   friend class internal::FunctionCallback;
   friend class Template;
+  friend class ObjectTemplate;
 
+  // Callers are expected to put the JSContext in the right compartment before
+  // making this call.
+  static Local<FunctionTemplate> New(
+    Isolate* isolate,
+    JSContext* cx,
+    FunctionCallback callback = 0,
+    Handle<Value> data = Handle<Value>(),
+    Handle<Signature> signature = Handle<Signature>(),
+    int length = 0);
   Local<ObjectTemplate> FetchOrCreateTemplate(size_t slotIndex);
   Local<Object> CreateNewInstance();
-  static Local<Value> MaybeConvertObjectProperty(Local<Value> value);
+  static Local<Value> MaybeConvertObjectProperty(Local<Value> value,
+						 Local<String> name);
+  void SetInstanceTemplate(Local<ObjectTemplate> instanceTemplate);
+  Handle<String> GetClassName();
+  // Return the object that should be used as a prototype by ObjectTemplates
+  // that have this FunctionTemplate as their constructor.  Can return an empty
+  // Local on failure.
+  Local<Object> GetProtoInstance(Local<Context> context);
+  // The FunctionTemplate we inherit from, if any.
+  MaybeLocal<FunctionTemplate> GetParent();
+  // Install properties from this template's InstanceTemplate, as well as the
+  // InstanceTemplates of all ancestors, on the given object.  Returns false on
+  // failure, true on success.
+  bool InstallInstanceProperties(Local<Object> target);
 };
 
 enum class PropertyHandlerFlags {
@@ -2203,7 +2235,8 @@ struct IndexedPropertyHandlerConfiguration {
 
 class V8_EXPORT ObjectTemplate : public Template {
  public:
-  static Local<ObjectTemplate> New(Isolate* isolate);
+  static Local<ObjectTemplate> New(Isolate* isolate,
+                                   Local<FunctionTemplate> constructor = Local<FunctionTemplate>());
 
   V8_DEPRECATE_SOON("Use maybe version", Local<Object> NewInstance());
   V8_WARN_UNUSED_RESULT MaybeLocal<Object> NewInstance(Local<Context> context);
@@ -2262,6 +2295,12 @@ class V8_EXPORT ObjectTemplate : public Template {
   friend class Utils;
   friend class FunctionTemplate;
 
+  // Callers are expected to put the JSContext in the right compartment before
+  // making this call.
+  static Local<ObjectTemplate> New(Isolate* isolate,
+                                   JSContext* cx,
+                                   Local<FunctionTemplate> constructor = Local<FunctionTemplate>());
+
   template<class N, class Getter, class Setter>
   void SetAccessorInternal(Handle<N> name,
                            Getter getter,
@@ -2272,12 +2311,17 @@ class V8_EXPORT ObjectTemplate : public Template {
                            Handle<AccessorSignature> signature);
   Local<Object> NewInstance(Handle<Object> prototype);
   Handle<String> GetClassName();
+  Local<FunctionTemplate> GetConstructor();
 
   // GetInstanceClass creates it if needed, otherwise returns the existing
   // one.  Null is returned if objects should be created with the default
   // plain-object JSClass.
   InstanceClass* GetInstanceClass();
   bool IsInstance(JSObject* obj);
+  static bool IsObjectFromTemplate(Local<Object> object);
+  // The object argument should be an object created from an ObjectTemplate, i.e.,
+  // an object for which IsObjectFromTemplate() returns true.
+  static Local<FunctionTemplate> GetObjectTemplateConstructor(Local<Object> object);
 };
 
 class V8_EXPORT External : public Value {
@@ -2985,5 +3029,77 @@ Isolate* PropertyCallbackInfo<T>::GetIsolate() const {
 template <class T>
 Isolate* ReturnValue<T>::GetIsolate() {
   return Isolate::GetCurrent();
+}
+
+template <class T>
+template <class S>
+V8_INLINE bool Local<T>::operator==(const Local<S>& that) const {
+  return Value::Cast(val_)->Equals(Value::Cast(that.val_));
+}
+
+template <class T>
+template <class S>
+V8_INLINE bool Local<T>::operator==(const PersistentBase<S>& that) const {
+  return Value::Cast(val_)->Equals(Value::Cast(that.val_));
+}
+
+template <class T>
+template <class S>
+V8_INLINE bool PersistentBase<T>::operator==(const Local<S>& that) const {
+  return Value::Cast(val_)->Equals(Value::Cast(that.val_));
+}
+
+template <class T>
+template <class S>
+V8_INLINE bool PersistentBase<T>::operator==(const PersistentBase<S>& that) const {
+  return Value::Cast(val_)->Equals(Value::Cast(that.val_));
+}
+
+template <>
+template <>
+V8_INLINE bool Local<Context>::operator==(const Local<Context>& that) const {
+  return val_ == that.val_;
+}
+
+template <>
+template <>
+V8_INLINE bool Local<Context>::operator==(const PersistentBase<Context>& that) const {
+  return val_ == that.val_;
+}
+
+template <>
+template <>
+V8_INLINE bool PersistentBase<Context>::operator==(const Local<Context>& that) const {
+  return val_ == that.val_;
+}
+
+template <>
+template <>
+V8_INLINE bool PersistentBase<Context>::operator==(const PersistentBase<Context>& that) const {
+  return val_ == that.val_;
+}
+
+template <>
+template <>
+V8_INLINE bool Local<String>::operator==(const Local<String>& that) const {
+  return *val_ == *that.val_;
+}
+
+template <>
+template <>
+V8_INLINE bool Local<String>::operator==(const PersistentBase<String>& that) const {
+  return *val_ == *that.val_;
+}
+
+template <>
+template <>
+V8_INLINE bool PersistentBase<String>::operator==(const Local<String>& that) const {
+  return *val_ == *that.val_;
+}
+
+template <>
+template <>
+V8_INLINE bool PersistentBase<String>::operator==(const PersistentBase<String>& that) const {
+  return *val_ == *that.val_;
 }
 }  // namespace v8
