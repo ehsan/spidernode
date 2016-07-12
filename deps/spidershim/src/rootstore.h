@@ -22,6 +22,7 @@
 
 #include <assert.h>
 #include <vector>
+#include <algorithm>
 
 #include "conversions.h"
 #include "gclist.h"
@@ -70,6 +71,16 @@ class RootStore {
     return GetV8Template(&values.back());
   }
 
+  Signature* Add(Signature* val) {
+    values.push_back(*GetValue(val));
+    return GetV8Signature(&values.back());
+  }
+
+  AccessorSignature* Add(AccessorSignature* val) {
+    values.push_back(*GetValue(val));
+    return GetV8AccessorSignature(&values.back());
+  }
+
   // T can be any type that GetValue() can convert to a JS::Value*,
   // for example v8::Value or v8::Template.
   template <class T>
@@ -101,6 +112,10 @@ class RootStore {
   Message* Add(Message* message) {
     messages.push_back(message);
     return message;
+  }
+
+  void Remove(Message* val) {
+    messages.erase(std::remove(messages.begin(), messages.end(), val), messages.end());
   }
 
  private:

@@ -25,9 +25,14 @@
             '../zlib/zlib.gyp:zlib',
           ],
         }],
+        [ 'OS=="mac" or OS=="ios"', {
+          'xcode_settings': { 'GCC_TREAT_WARNINGS_AS_ERRORS': 'NO' },
+        }, {
+          'cflags!': ['-Werror'],
+        }],
       ],
 
-      'direct_dependent_settings': {
+      'all_dependent_settings': {
         'include_dirs': [
           'include',
         ],
@@ -83,6 +88,7 @@
         'src/v8proxy.cc',
         'src/v8script.cc',
         'src/v8scriptcompiler.cc',
+        'src/v8signature.cc',
         'src/v8stub.cc',
         'src/v8stackframe.cc',
         'src/v8stacktrace.cc',
