@@ -2,6 +2,15 @@
   'variables': {
     'library%': 'static_library',
     'node_engine%': 'spidermonkey',
+    'external_spidermonkey_debug%': '',
+    'external_spidermonkey_release%': '',
+    'conditions': [
+      ['external_spidermonkey_debug=="" and external_spidermonkey_release==""', {
+        'spidermonkey_gyp': 'spidermonkey.gyp',
+      }, {
+        'spidermonkey_gyp': 'spidermonkey-external.gyp',
+      }],
+    ],
     'python%': 'python',
     'library_files': [
       'lib/spidershim.js',
@@ -24,12 +33,12 @@
         [ 'target_arch=="arm"', { 'defines': [ '__arm__=1' ] } ],
         ['node_engine=="spidermonkey"', {
           'dependencies': [
-            'spidermonkey.gyp:spidermonkey',
             '../zlib/zlib.gyp:zlib',
+            '<(spidermonkey_gyp):spidermonkey',
           ],
           'export_dependent_settings': [
-            'spidermonkey.gyp:spidermonkey',
             '../zlib/zlib.gyp:zlib',
+            '<(spidermonkey_gyp):spidermonkey',
           ],
         }],
         [ 'OS=="mac" or OS=="ios"', {
