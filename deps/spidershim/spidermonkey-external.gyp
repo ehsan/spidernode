@@ -4,13 +4,11 @@
     'spidermonkey_objdir_release': '<(external_spidermonkey_release)',
     'spidermonkey_binaries_debug': [
       '<(external_spidermonkey_debug)/js/src/<(STATIC_LIB_PREFIX)js_static<(STATIC_LIB_SUFFIX)',
-      '<(external_spidermonkey_debug)/dist/lib/<(SHARED_LIB_PREFIX)nspr4<(SHARED_LIB_SUFFIX)',
       '<(external_spidermonkey_debug)/dist/lib/<(SHARED_LIB_PREFIX)nss3<(SHARED_LIB_SUFFIX)',
       '<(external_spidermonkey_debug)/config/external/icu/data/icudata.o',
     ],
     'spidermonkey_binaries_release': [
       '<(external_spidermonkey_release)/js/src/<(STATIC_LIB_PREFIX)js_static<(STATIC_LIB_SUFFIX)',
-      '<(external_spidermonkey_release)/dist/lib/<(SHARED_LIB_PREFIX)nspr4<(SHARED_LIB_SUFFIX)',
       '<(external_spidermonkey_release)/dist/lib/<(SHARED_LIB_PREFIX)nss3<(SHARED_LIB_SUFFIX)',
       '<(external_spidermonkey_release)/config/external/icu/data/icudata.o',
     ],
@@ -18,17 +16,21 @@
       ['OS == "linux"', {
         'spidermonkey_binaries_debug+': [
           '<(external_spidermonkey_debug)/mozglue/build/<(STATIC_LIB_PREFIX)mozglue<(STATIC_LIB_SUFFIX)',
+	  '<(external_spidermonkey_debug)/config/external/nspr/pr/<(SHARED_LIB_PREFIX)nspr4<(SHARED_LIB_SUFFIX)',
         ],
         'spidermonkey_binaries_release+': [
           '<(external_spidermonkey_release)/mozglue/build/<(STATIC_LIB_PREFIX)mozglue<(STATIC_LIB_SUFFIX)',
+	  '<(external_spidermonkey_release)/config/external/nspr/pr/<(SHARED_LIB_PREFIX)nspr4<(SHARED_LIB_SUFFIX)',
         ],
       }],
       ['OS == "mac"', {
         'spidermonkey_binaries_debug': [
           '<(external_spidermonkey_debug)/dist/bin/<(SHARED_LIB_PREFIX)mozglue<(SHARED_LIB_SUFFIX)',
+	  '<(external_spidermonkey_debug)/dist/lib/<(SHARED_LIB_PREFIX)nspr4<(SHARED_LIB_SUFFIX)',
         ],
         'spidermonkey_binaries_release': [
           '<(external_spidermonkey_release)/dist/bin/<(SHARED_LIB_PREFIX)mozglue<(SHARED_LIB_SUFFIX)',
+	  '<(external_spidermonkey_release)/dist/lib/<(SHARED_LIB_PREFIX)nspr4<(SHARED_LIB_SUFFIX)',
         ],
       }],
     ],
@@ -93,8 +95,27 @@
           },
         },
         'libraries': [
+	  '-ljs_static',
           '-lnspr4',
-        ],
+	  '-lz',
+	],
+	'conditions': [
+	  [ 'target_arch=="arm"', {
+	    'defines': [ '__arm__=1' ]
+	  }],
+	  ['OS == "linux"', {
+	    'libraries': [
+	      '-ldl',
+	      '-lmozglue',
+	      '-lrt',
+	    ],
+	  }],
+	  ['OS == "mac"', {
+	    'libraries': [
+	      '-lmozglue',
+	    ],
+	  }],
+	],
       },
 
     },

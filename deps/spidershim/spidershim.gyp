@@ -52,29 +52,10 @@
         'include_dirs': [
           'include',
         ],
-        'libraries': [
-          '-ljs_static',
-          '-lspidershim',
-          '-lz',
-        ],
-        'conditions': [
-          [ 'target_arch=="arm"', {
-            'defines': [ '__arm__=1' ]
-          }],
-          ['OS == "linux"', {
-            'libraries': [
-              '-ldl',
-              '-lzlib',
-              '<(PRODUCT_DIR)/<(STATIC_LIB_PREFIX)mozglue<(STATIC_LIB_SUFFIX)',
-              '-lrt',
-            ],
-          }],
-          ['OS == "mac"', {
-            'libraries': [
-              '-lmozglue',
-            ],
-          }],
-        ],
+        'library_dirs': [ '<(PRODUCT_DIR)' ],
+	'libraries': [
+	  '-lspidershim',
+	],
       },
 
       'sources': [

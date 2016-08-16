@@ -933,7 +933,7 @@ def validate_spidermonkey_objdir(sm, suffix):
           'mac': '%s/dist/bin/libmozglue.dylib' % sm,
       }.get(flavor)
       nspr4 = {
-          'linux': '%s/dist/lib/libnspr4.so' % sm,
+          'linux': '%s/dist/bin/libnspr4.so' % sm,
           'mac': '%s/dist/lib/libnspr4.dylib' % sm,
       }.get(flavor)
       nss3 = {
