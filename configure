@@ -922,7 +922,7 @@ def configure_v8(o):
 
 
 
-def validate_spidermonkey_objdir(sm, suffix):
+def validate_spidermonkey_objdir(o, sm, suffix):
   if sm != "":
       if not os.path.isdir(sm):
           raise Exception('--with-external-spidermonkey-%s specified without a valid directory path.' % suffix)
@@ -945,22 +945,28 @@ def validate_spidermonkey_objdir(sm, suffix):
           'mac': '%s/js/src/libjs_static.a' % sm,
       }.get(flavor)
       icudata = "%s/config/external/icu/data/icudata.o" % sm
-      for f in [dist_include, jsapi_h, mozglue, nspr4, nss3, js_static, icudata]:
+      for f in [dist_include, jsapi_h, mozglue, js_static, icudata]:
           if not os.path.exists(f):
               raise Exception('Cannot find %s. Did you pass a valid SpiderMonkey objdir to --with-external-spidermonkey-%s?' % (f, suffix))
+      o['variables']['external_spidermonkey_' + suffix + '_has_nss'] = 1 if os.path.exists(nss3) else 0
+      o['variables']['external_spidermonkey_' + suffix + '_has_nspr'] = 1 if os.path.exists(nspr4) else 0
+  else:
+      o['variables']['external_spidermonkey_' + suffix + '_has_nss'] = 0
+      o['variables']['external_spidermonkey_' + suffix + '_has_nspr'] = 0
 
 
 def configure_spidermonkey(o):
   o['variables']['spidermonkey_gczeal'] = 1 if options.enable_gczeal else 0
   sm_debug = options.external_spidermonkey_debug
   sm_release = options.external_spidermonkey_release
-  validate_spidermonkey_objdir(sm_debug, 'debug')
-  validate_spidermonkey_objdir(sm_release, 'release')
+  validate_spidermonkey_objdir(o, sm_debug, 'debug')
+  validate_spidermonkey_objdir(o, sm_release, 'release')
   if options.debug and sm_release != "" and sm_debug == "":
       raise Exception('--debug passed without specifying --with-external-spidermonkey-debug')
   elif sm_debug != "" and sm_release == "":
       raise Exception('--with-external-spidermonkey-debug passed without specifying --with-external-spidermonkey-release')
-  o['variables']['external_spidermonkey_debug'] = options.external_spidermonkey_debug
+  if sm_debug != "":
+    o['variables']['external_spidermonkey_debug'] = options.external_spidermonkey_debug
   o['variables']['external_spidermonkey_release'] = options.external_spidermonkey_release
 
 

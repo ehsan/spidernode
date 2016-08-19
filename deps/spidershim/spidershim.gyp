@@ -2,8 +2,10 @@
   'variables': {
     'library%': 'static_library',
     'node_engine%': 'spidermonkey',
-    'external_spidermonkey_debug%': '',
     'external_spidermonkey_release%': '',
+    'variables': {
+      'external_spidermonkey_debug%': '<(external_spidermonkey_release)',
+    },
     'conditions': [
       ['external_spidermonkey_debug=="" and external_spidermonkey_release==""', {
         'spidermonkey_gyp': 'spidermonkey.gyp',
