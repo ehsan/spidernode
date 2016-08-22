@@ -282,7 +282,7 @@ after_install:
   - if [ "$USE_CCACHE" == "true" ]; then export CC="`which ccache` $CC" CXX="`which ccache` $CXX"; fi
 before_script:
   - if [ "$USE_CCACHE" == "true" ]; then ccache -s; fi
-  - if [ "$EXTERNAL_SPIDERMONKEY" == "true" ]; then mkdir /tmp/sm; BUILDTYPE=$(if [ "$ENABLE_DEBUG" == "true" ]; then echo 'Debug'; else echo 'Release'; fi) ./deps/spidershim/scripts/build-spidermonkey.sh /tmp/sm; fi
+  - if [ "$TRAVIS_OS_NAME" == "osx" -a "$EXTERNAL_SPIDERMONKEY" == "true" ]; then mkdir /tmp/sm; BUILDTYPE=$(if [ "$ENABLE_DEBUG" == "true" ]; then echo 'Debug'; else echo 'Release'; fi) ./deps/spidershim/scripts/build-spidermonkey.sh /tmp/sm; fi
   - ./configure $(if [ "$ENABLE_DEBUG" == "true" ]; then echo '--debug'; fi) --engine=spidermonkey $(if [ "$ENABLE_ASAN" == "true" ]; then echo "--enable-asan"; fi) $(if [ "$BUILD_CONFIG" == "gczeal" ]; then echo "--enable-gczeal"; fi) $(if [ "$EXTERNAL_SPIDERMONKEY" == "true" ]; then echo "--with-external-spidermonkey-debug=/tmp/sm --with-external-spidermonkey-release=/tmp/sm"; fi)
 script:
   - travis_wait 60 make V= $MAKE_ARGS -C out BUILDTYPE=$(if [ "$ENABLE_DEBUG" == "true" ]; then echo 'Debug'; else echo 'Release'; fi)
