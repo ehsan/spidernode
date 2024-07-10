@@ -4,3 +4,4 @@ pytest-cov==2.1.0
 pytest-httpbin==0.0.7
 httpbin==0.4.0
 wheel
+zipp>=3.19.1 # not directly required, pinned by Snyk to avoid a vulnerability
